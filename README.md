@@ -1,1 +1,1 @@
-# scad-admin-enseirb
+# scad-enseirb
