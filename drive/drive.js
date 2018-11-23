@@ -2,6 +2,12 @@ const fs = require('fs');
 const readline = require('readline');
 const { google } = require('googleapis');
 const path = require('path');
+const crypto = require('crypto');
+
+const AppendInitVect = require('./appendInitVect');
+
+var KEY;
+var initVector; 
 
 // If modifying these scopes, delete token.json.
 // const SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly'];
@@ -22,7 +28,7 @@ fs.readFile('credentials.json', (err, content) => {
       func = listFiles;
       break;
     case 'create':
-      func = createFile;
+      func = encrypt;
       break;
     case 'dl_all':
       func = downloadFiles;
@@ -121,22 +127,20 @@ function listFiles(auth, param) {
    Usage: node drive.js create path
 */
 function createFile(auth, filePath) {
-  var encrypted_file = encrypt(filePath);
-  // {'fileName': name, 'fileData': data, 'fileKey': key}
-  // var file_path = filePath;
 
   var drive = google.drive({ version: 'v3', auth });
   var fileMetadata = {
-    'name': encrypted_file["fileName"]
+    'name': path.basename(filePath)
   };
   var media = {
     mimeType: 'text/plain', // TODO: check the mime type of the files to be uploaded
-    body: encrypted_file["fileData"]
+    body: fs.createReadStream(filePath+".enc")
   };
   var key_media = {
     mimeType: 'text/plain', // TODO: check the mime type of the files to be uploaded
-    body: encrypted_file["fileKey"]
+    body: fs.createReadStream(filePath+".key")
   }
+
   drive.files.create({
     resource: fileMetadata,
     media: media,
@@ -147,11 +151,12 @@ function createFile(auth, filePath) {
       console.error(err);
     } else {
       console.log(`File uploaded with Id ${file.data.id}`);
+      fs.unlinkSync(filePath+".enc");
     }
   });
   drive.files.create({
     resource: {
-      'name': encrypted_file["fileName"]+".key"
+      'name': fileMetadata["name"] + ".key"
     },
     media: key_media,
     fields: 'id'
@@ -161,6 +166,7 @@ function createFile(auth, filePath) {
       console.error(err);
     } else {
       console.log(`File key uploaded with Id ${file.data.id}`);
+      fs.unlinkSync(filePath+".key");
     }
   });
 }
@@ -252,7 +258,19 @@ function downloadFile(auth, param) {
       res.data
         .on('end', () => {
           console.log(`Downloaded file ${fileId}`);
-          decypt(fileId,`./${fileId}_encrypted_download`, "key");
+          var cipherKey = fs.createWriteStream(`${fileId}.key`);
+          drive.files.get({ fileId: "1ZVhHLjnRoxaIafFyyqlaTDvlwqLMEhnD", alt: 'media' }, { responseType: 'stream' },
+            function (cipherErr, cipherRes) {
+              cipherRes.data
+                .on('end', () => {
+                  console.log(`Downloaded key`);
+                  decrypt(fileId,`./${fileId}_encrypted_download`, "keykeykeykeykeyk");
+                })
+                .on('error', cipherErr => {
+                  console.log('Error', err);
+                })
+                .pipe(cipherKey);
+            });
         })
         .on('error', err => {
           console.log('Error', err);
@@ -261,28 +279,83 @@ function downloadFile(auth, param) {
     });
 }
 
-function decypt(fileId, cipherFile, fileKey) {  
-  var dest = fs.createWriteStream(`./${fileId}_download`);
-  var data = fs.readFileSync(cipherFile);
-  console.log("File decrypted");
-  fs.unlinkSync(cipherFile);
-  dest.write(data);
-}
 
 function help(auth, param) {
   console.log("Unrecognized usage.");
   console.log("Please type: \n list to print a list of Files \n clean to remove all files from the Drive \n create 'path_to_file' to create and upload a new file \n dl_all to download all files from the Drive \n dl 'fileId to download the given file\n rm 'fileId' to remove a file");
 }
 
-function encrypt(filePath) {
+/* 
+ * Function in which will be integrated the file encryption 
+ * @param Path of the file to be encrypted
+ * @return an array containing the file name, the encrypted data and the symetric key used 
+ */
+function encrypt(auth, filePath) {
   var name = path.basename(filePath);
   if (typeof filePath === 'undefined') {
     console.error("Please type the name of the file as an argument");
     return;
   }
 
-  var data = fs.createReadStream(filePath);
-  var key = "key";
+  const initVect = crypto.randomBytes(16);
+  
+  // Generate a cipher key from the password.
+  const CIPHER_KEY = crypto.randomBytes(32);
+  const readStream = fs.createReadStream(filePath);
+  const cipher = crypto.createCipheriv('aes256', CIPHER_KEY, initVect);
+  const appendInitVect = new AppendInitVect(initVect);
+  // Create a write stream with a different file extension.
+  const writeStream = fs.createWriteStream(path.join(filePath + ".enc"));
+  
+  readStream
+    .pipe(cipher)
+    .pipe(appendInitVect)
+    .pipe(writeStream)
+    
+  
+  var cipherKeyFile = fs.createWriteStream(filePath+".key");
+  cipherKeyFile.write(CIPHER_KEY);
 
-  return {'fileName': name, 'fileData': data, 'fileKey': key};
+  writeStream.on('finish', () => {
+    console.log("File encrypted");
+    createFile(auth, filePath);
+  });
+  
+}
+
+function getCipherKey(fileId) {
+  return fs.readFileSync(`${fileId}.key`);
+}
+
+/* 
+ * Function in which will be integrated the file encryption 
+ * @param The file Id on the drive, the path of the ciher File and the Key used to encrypt the data 
+ * @return null 
+ */
+
+function decrypt(fileId, cipherFile, fileKey) {  
+  const readInitVect = fs.createReadStream(cipherFile, { end: 15 });
+  var dest = fs.createWriteStream(`./${fileId}.download`);
+
+  let initVect;
+  readInitVect.on('data', (chunk) => {
+    initVect = chunk;
+  });
+
+  // Once we’ve got the initialization vector, we can decrypt the file.
+  readInitVect.on('close', () => {
+    const cipherKey = getCipherKey(fileId);
+    const readStream = fs.createReadStream(cipherFile, { start: 16 });
+    const decipher = crypto.createDecipheriv('aes256', cipherKey, initVect);
+    
+    readStream
+    .pipe(decipher)
+    .pipe(dest);
+    dest.on('finish', () => {
+      console.log("File decrypted");
+      fs.unlinkSync(cipherFile);
+      fs.unlinkSync(`${fileId}.key`);
+    });
+
+});
 }
