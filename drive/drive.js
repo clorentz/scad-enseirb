@@ -3,8 +3,21 @@ const readline = require('readline');
 const { google } = require('googleapis');
 const path = require('path');
 const crypto = require('crypto');
+const asym_crypto = require('quick-encrypt'); 
 
 const AppendInitVect = require('./appendInitVect');
+
+if (fs.existsSync("asym_keys.json")) {
+  let keysFile = fs.readFileSync("asym_keys.json");
+  var keys = JSON.parse(keysFile);
+}
+else {
+  var keys = asym_crypto.generate(2048)
+  
+  var asym_key = fs.createWriteStream("asym_keys.json");
+  asym_key.write(JSON.stringify(keys));
+  console.log("Keys generated");
+}
 
 var KEY;
 var initVector; 
@@ -259,7 +272,7 @@ function downloadFile(auth, param) {
         .on('end', () => {
           console.log(`Downloaded file ${fileId}`);
           var cipherKey = fs.createWriteStream(`${fileId}.key`);
-          drive.files.get({ fileId: "1ZVhHLjnRoxaIafFyyqlaTDvlwqLMEhnD", alt: 'media' }, { responseType: 'stream' },
+          drive.files.get({ fileId: "1bOUxBtQfZYtWUGo2z-zvXL6sVcSinYKH", alt: 'media' }, { responseType: 'stream' },
             function (cipherErr, cipherRes) {
               cipherRes.data
                 .on('end', () => {
@@ -314,7 +327,7 @@ function encrypt(auth, filePath) {
     
   
   var cipherKeyFile = fs.createWriteStream(filePath+".key");
-  cipherKeyFile.write(CIPHER_KEY);
+  cipherKeyFile.write(asym_crypto.encrypt(CIPHER_KEY.toString('base64'), keys.public));
 
   writeStream.on('finish', () => {
     console.log("File encrypted");
@@ -324,7 +337,9 @@ function encrypt(auth, filePath) {
 }
 
 function getCipherKey(fileId) {
-  return fs.readFileSync(`${fileId}.key`);
+  var encrypted_key = fs.readFileSync(`${fileId}.key`);
+  var d_key = asym_crypto.decrypt(encrypted_key.toString(), keys.private);
+  return Buffer.from(d_key, 'base64');
 }
 
 /* 
