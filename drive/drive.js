@@ -146,11 +146,11 @@ function createFile(auth, filePath) {
     'name': path.basename(filePath)
   };
   var media = {
-    mimeType: 'text/plain', // TODO: check the mime type of the files to be uploaded
+    mimeType: 'text/plain', 
     body: fs.createReadStream(filePath+".enc")
   };
   var key_media = {
-    mimeType: 'text/plain', // TODO: check the mime type of the files to be uploaded
+    mimeType: 'text/plain', 
     body: fs.createReadStream(filePath+".key")
   }
 
@@ -233,7 +233,8 @@ function cleanDrive(auth, param) {
 
 /* Function to download all uploaded files of the drive 
    Usage: node drive.js dl_all
-*/
+   This function will no longer work since we need to pass the key's ID
+   */
 function downloadFiles(auth, param) {
   if (typeof param != "undefined") {
     console.error(`This function does not take any parameter`);
@@ -256,7 +257,7 @@ function downloadFiles(auth, param) {
   });
 }
 
-/* Function used by the previous one to download a file on the drive 
+/* Function used to call the api and download a file by Id
 */
 function downloadFile(auth, param) {
   if (typeof param === "undefined") {
@@ -272,12 +273,14 @@ function downloadFile(auth, param) {
         .on('end', () => {
           console.log(`Downloaded file ${fileId}`);
           var cipherKey = fs.createWriteStream(`${fileId}.key`);
+          // Launch of an API call to download the key
+          // TODO: get the key ID in database
           drive.files.get({ fileId: "1bOUxBtQfZYtWUGo2z-zvXL6sVcSinYKH", alt: 'media' }, { responseType: 'stream' },
             function (cipherErr, cipherRes) {
               cipherRes.data
                 .on('end', () => {
                   console.log(`Downloaded key`);
-                  decrypt(fileId,`./${fileId}_encrypted_download`, "keykeykeykeykeyk");
+                  decrypt(fileId,`./${fileId}_encrypted_download`);
                 })
                 .on('error', cipherErr => {
                   console.log('Error', err);
@@ -301,7 +304,6 @@ function help(auth, param) {
 /* 
  * Function in which will be integrated the file encryption 
  * @param Path of the file to be encrypted
- * @return an array containing the file name, the encrypted data and the symetric key used 
  */
 function encrypt(auth, filePath) {
   var name = path.basename(filePath);
@@ -310,13 +312,14 @@ function encrypt(auth, filePath) {
     return;
   }
 
+  // Generation of a random initialization vector
   const initVect = crypto.randomBytes(16);
   
-  // Generate a cipher key from the password.
+  // Generation of a random Key
   const CIPHER_KEY = crypto.randomBytes(32);
-  const readStream = fs.createReadStream(filePath);
-  const cipher = crypto.createCipheriv('aes256', CIPHER_KEY, initVect);
-  const appendInitVect = new AppendInitVect(initVect);
+  const readStream = fs.createReadStream(filePath); // The file to encrypt
+  const cipher = crypto.createCipheriv('aes256', CIPHER_KEY, initVect); // The cipher
+  const appendInitVect = new AppendInitVect(initVect); // AppendInitVect to append it tothe file after encryption
   // Create a write stream with a different file extension.
   const writeStream = fs.createWriteStream(path.join(filePath + ".enc"));
   
@@ -326,20 +329,22 @@ function encrypt(auth, filePath) {
     .pipe(writeStream)
     
   
-  var cipherKeyFile = fs.createWriteStream(filePath+".key");
+  var cipherKeyFile = fs.createWriteStream(filePath+".key"); // Creation of the key File
+  // Asymetric encryption of the file key 
+  // The base64 option allows to keep the correct key size
   cipherKeyFile.write(asym_crypto.encrypt(CIPHER_KEY.toString('base64'), keys.public));
 
   writeStream.on('finish', () => {
     console.log("File encrypted");
-    createFile(auth, filePath);
+    createFile(auth, filePath); // call for the upload of the file
   });
   
 }
 
 function getCipherKey(fileId) {
   var encrypted_key = fs.readFileSync(`${fileId}.key`);
-  var d_key = asym_crypto.decrypt(encrypted_key.toString(), keys.private);
-  return Buffer.from(d_key, 'base64');
+  var d_key = asym_crypto.decrypt(encrypted_key.toString(), keys.private); // Decryption of the key with the peer's key
+  return Buffer.from(d_key, 'base64'); // Change to buffer with base64 format to have the correct key size for decryption of the file
 }
 
 /* 
@@ -348,10 +353,11 @@ function getCipherKey(fileId) {
  * @return null 
  */
 
-function decrypt(fileId, cipherFile, fileKey) {  
+function decrypt(fileId, cipherFile) {  
   const readInitVect = fs.createReadStream(cipherFile, { end: 15 });
   var dest = fs.createWriteStream(`./${fileId}.download`);
 
+  // fetch the initialization Vector on the downloaded file
   let initVect;
   readInitVect.on('data', (chunk) => {
     initVect = chunk;
@@ -359,8 +365,8 @@ function decrypt(fileId, cipherFile, fileKey) {
 
   // Once we’ve got the initialization vector, we can decrypt the file.
   readInitVect.on('close', () => {
-    const cipherKey = getCipherKey(fileId);
-    const readStream = fs.createReadStream(cipherFile, { start: 16 });
+    const cipherKey = getCipherKey(fileId); // Call for the decryption of the key
+    const readStream = fs.createReadStream(cipherFile, { start: 16 }); // Start at 16 since the initialization vector is of size 16
     const decipher = crypto.createDecipheriv('aes256', cipherKey, initVect);
     
     readStream
@@ -368,7 +374,7 @@ function decrypt(fileId, cipherFile, fileKey) {
     .pipe(dest);
     dest.on('finish', () => {
       console.log("File decrypted");
-      fs.unlinkSync(cipherFile);
+      fs.unlinkSync(cipherFile); // Cleaning the temporary files 
       fs.unlinkSync(`${fileId}.key`);
     });
 
